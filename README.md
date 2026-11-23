@@ -4,17 +4,52 @@
 
 I started this fork because I liked running multiple coding agents in Herdr, but still opened VS Code for everyday tasks like reading a Markdown file, uploading an attachment, or moving a file between folders. Herdr Plus brings those tasks into the **Files** panel, right beside your terminals and agents.
 
-- **Read files comfortably.** Preview images, browse ZIP and TAR contents, and view CSV or TSV as a table. Markdown and basic HTML open formatted, and Raw text wraps by default. PDF preview shows page one when Poppler is available.
-- **Switch between previews and the file tree.** Open files in full-height preview tabs inside the Files panel. Right-click a folder to give it its own tab.
-- **Move files visually.** Drag files and folders within the panel. The dragged item’s name follows your cursor, the destination is highlighted, and holding over a closed folder opens it.
-- **Transfer files from Windows.** Drop files from Explorer into a local or connected remote folder, or download a file back to your laptop.
-- **Manage files in place.** Right-click to create, rename, copy, cut, paste, or delete. Transfer progress stays in the Files header so the tree stays put.
+## Herdr Plus at a glance
 
-Herdr Plus builds on [Herdr Desktop](https://github.com/herdrdev/herdr-app). If you use Herdr every day, **try the fork and tell us which file task still sends you back to another editor.** Small pull requests and issue reports are welcome, especially reports about how drag-and-drop feels on your setup.
+Herdr Plus keeps Herdr's spaces, agent and terminal tabs, split panes, SSH workspaces, and persistent Core sessions. The comparison uses the [upstream commit this fork is based on](https://github.com/herdrdev/herdr-app/commit/317e673f1f1568b876cbaa0b41dabeb9153ecbea).
 
-Herdr is a desktop app for terminals and coding agents. Keep work in spaces, see which agents need you, and leave terminals running when you close the window.
+| Workflow | Herdr Desktop | Herdr Plus on `master` |
+| --- | --- | --- |
+| **Read source and logs** | Syntax-highlighted, read-only source preview. | Word wrap on by default, a wrap toggle, and a labeled excerpt for large text files. |
+| **Read Markdown and HTML** | Opens source in the text viewer. | Rendered Markdown and basic HTML, with one click back to **Raw**. |
+| **Browse several files and folders** | One preview takes the place of the file tree. | Full-height preview tabs inside **Files**. Right-click files or folders for **Open in New Tab**. Choose **Explorer** to return to the workspace tree. |
+| **Inspect images** | The Files viewer reads text. | Preview PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, and AVIF with **Fit** and **100%** views. Animated images show a still frame. |
+| **See what's inside an archive** | The Files viewer reads text. | Search the first 500 paths in ZIP and TAR-family archives, including sizes where available. The preview reads archive metadata without extracting files. |
+| **Scan CSV or TSV** | Opens delimited data as text. | Switch between a table and **Raw**. The table shows up to 150 rows and 24 columns. |
+| **Check a PDF** | The Files viewer reads text. | Preview page one when Poppler is available. Use **Download** for the full document. |
+| **Upload from Explorer** | The Files panel lists and previews workspace entries. | On Windows, drop one or more files onto a folder, a file in the target folder, or the Files header. Transfers work with local and connected Unix workspaces. |
+| **Download to your computer** | The Files panel lists and previews workspace entries. | Open a file and choose **Download**. Select the destination folder on your computer. Existing files are preserved. |
+| **Move items inside Files** | Clicking a folder expands it and clicking a file opens its preview. | Drag files and folders between directories. The item name follows the cursor, the destination lights up, holding over a folder opens it, and dragging near an edge scrolls. **Esc** cancels. |
+| **Manage files from the tree** | Read-only browsing and previews. | Right-click to create a file or folder, rename, cut, copy, paste, or delete. Cut and paste work within the same machine. Delete asks for confirmation. |
+| **Follow transfer progress** | Transfer controls are outside the Files panel. | A small spinner and status in the Files header leave the list or preview in place. |
 
-## Install
+Remote image previews can use the server's Pillow or FFmpeg. On Windows, when
+the server lacks a renderer, supported images and PDFs up to 64 MiB can use
+a temporary local copy. Image previews are scaled to a maximum of 1,600 px
+on the longest side. PDF rendering requires Poppler.
+
+### Tested in the local build
+
+These changes have been tested locally and are pending publication to `master`.
+
+| Workflow | Herdr Desktop | Herdr Plus local build |
+| --- | --- | --- |
+| **Select and copy table data** | Select raw CSV or TSV text in the source viewer. | Drag to select text in the rendered grid, or use **Copy table** to copy the displayed cells as tab-separated data. |
+| **Open an Excel workbook** | The Files viewer reads text. | Preview `.xlsx` and `.xlsm`, switch worksheets, and copy cells. Requires Python 3 on the file's machine. |
+| **Close to the Windows system tray** | Closing the window leaves terminal sessions running in Core. | **X** hides the main window in the tray. Click its icon to restore it. Choose **Quit Herdr** from the tray menu or Settings to exit the desktop app while Core keeps sessions running. |
+
+**Which file task still sends you back to another editor?** Share it in
+[Issues](https://github.com/junedhan/herdrplus/issues), or open a pull request.
+Drag-and-drop reports are especially helpful when they mention the OS and
+whether the workspace is local or remote.
+
+## Install Herdr Plus
+
+Follow [Build from source](#build-from-source) to try this fork.
+
+## Install upstream Herdr
+
+These installers are for the upstream desktop app.
 
 ### Linux and macOS
 
@@ -135,8 +170,8 @@ Clone this repo with its submodules. Use Rust 1.95.0 and Zig 0.16.0, the version
 Linux needs the development packages listed in that workflow.
 
 ```sh
-git clone --recurse-submodules https://github.com/herdrdev/herdr-app.git
-cd herdr-app
+git clone --recurse-submodules https://github.com/junedhan/herdrplus.git
+cd herdrplus
 just build
 just test
 just install
