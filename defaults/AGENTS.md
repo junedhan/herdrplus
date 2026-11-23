@@ -1104,7 +1104,14 @@ The full surface is in `gpui-kit.d.ts` next to this file.
 
 The Files panel opens Markdown and HTML in a formatted preview. **Raw** shows
 the source, with word wrap on by default. HTML preview supports formatted
-document text. Drag files from your file manager onto a folder row to copy
+document text. Raster images have Fit and 100% views of a scaled preview.
+Open a file to add a tab inside Files while keeping the tree visible. Right-click
+a file or folder and choose **Open in New Tab**. **Explorer** returns to
+the workspace tree at full height.
+Animated images show one frame. ZIP and TAR previews list and filter entries
+without unpacking them. CSV and TSV have a table and Raw view, and large text
+files can show an excerpt. PDF shows page one when Poppler is available on
+the machine rendering it. Drag files from your file manager onto a folder row to copy
 them into that folder, or onto a file row to copy them beside that file.
 Drop on the Files header or the empty space below the tree to copy to the
 root. Open a file and choose **Download** to copy it to a folder you select.

@@ -1,7 +1,8 @@
 // A lazy file browser for the focused pane's folder, with previews and local file copies.
-import { View, div, svg } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, Input, InputState, ScrollHandle, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, pickFolder } from "herdr";
+import { listArchive, loadImagePreview, parseTable, powershell, previewFormat, psQuote, readTextExcerpt, releasePreview, windows, windowsArg } from "./file-preview.js";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -12,22 +13,16 @@ function location() {
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
-const windows = () => window()?.platform === "windows";
-const psQuote = value => "'" + value.replace(/['‘’‚‛]/g, "$&$&") + "'";
-const windowsArg = value => '"' + value.replace(/(\\*)"/g, '$1$1\\"').replace(/\\+$/, "$&$&") + '"';
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  const unit = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return (bytes / 1024 ** unit).toFixed(1) + " " + ["B", "KiB", "MiB", "GiB", "TiB"][unit];
+}
 const publishCopy = 'umask 077; temp=$(mktemp -d "$1/.herdr-copy-XXXXXXXX") || exit; ' +
   'trap \'rm -f "$temp/$2"; rmdir "$temp"\' EXIT; ' +
   'cat > "$temp/$2" && ln "$temp/$2" "$1/"';
 
-async function powershell(script) {
-  const result = await exec("powershell", ["-NoProfile", "-STA", "-Command",
-    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; " + script],
-    { timeout: 600000 });
-  if (result.code !== 0) throw new Error(result.stderr.trim() || "File operation failed");
-  return result.stdout.trim();
-}
-
-async function remoteCopy(source, folder, name, on, upload) {
+async function remoteCopy(source, folder, name, on, upload, output, maxBytes) {
   // Core accepts at most 8 MB per piped invocation. Keep each request smaller.
   const coreArgs = (...args) => psQuote(["exec", "--on", on, "--timeout", "90", ...args].map(windowsArg).join(" "));
   const setup = "$chunk = 4194304; $buffer = New-Object byte[] $chunk; " +
@@ -59,10 +54,11 @@ async function remoteCopy(source, folder, name, on, upload) {
     return;
   }
   const read = coreArgs("--", "sh", "-c", 'test -f "$1" && dd if="$1" bs=4194304 skip="$2" count=1 2>/dev/null', "files-copy", source);
-  await powershell(setup + "$dest = " + psQuote(folder + "/" + name) + "; " +
+  await powershell(setup + "$dest = " + psQuote(output ?? folder + "/" + name) + "; " +
     "$temp = [IO.Path]::Combine([IO.Path]::GetDirectoryName($dest), '.herdr-copy-' + [guid]::NewGuid()); " +
     "try { $file = [IO.File]::Open($temp, 'CreateNew'); try { $index = 0; do { " +
-    "$start = $file.Position; Invoke-Core (" + read + " + ' ' + $index) 0 $file; $index++ " +
+    "$start = $file.Position; Invoke-Core (" + read + " + ' ' + $index) 0 $file; $index++; " +
+    (maxBytes ? "if ($file.Position -gt " + maxBytes + ") { throw 'File exceeds the preview transfer limit' }; " : "") +
     "} while ($file.Position - $start -eq $chunk) } finally { $file.Dispose() }; " +
     "[IO.File]::Move($temp, $dest) } finally { [IO.File]::Delete($temp) }");
 }
@@ -207,11 +203,18 @@ async function directory(path, on) {
 export default class Files extends View {
   init(_props, cx) {
     this.saved = new Map();
-    this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
+    this.tabs = [];
+    this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.folderErrors = new Map(); this.marks = {};
     this.nameInput = InputState.new({ value: "" });
     this.nameInput.on("submit", (_e, cx) => this.submitAction(cx));
+    this.archiveSearch = InputState.new({ value: "" });
+    this.archiveSearch.on("change", (_e, cx) => {
+      if (this.activeTab?.kind === "file") this.activeTab.archiveQuery = this.archiveSearch.value();
+      cx.notify();
+    });
     this.focus = cx.focus_handle();
     this.treeScroll = ScrollHandle.new();
+    this.tabScroll = ScrollHandle.new();
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
     cx.timer.every(300, cx => {
@@ -241,6 +244,12 @@ export default class Files extends View {
     });
   }
 
+  async close() {
+    const tabs = this.tabs;
+    this.tabs = [];
+    await Promise.all(tabs.map(tab => releasePreview(tab.media?.absolute)));
+  }
+
   watch(root, cx) {
     if (this.on || this.watched === root) return;
     this.watched = root;
@@ -257,8 +266,14 @@ export default class Files extends View {
 
   async loadFolder(path, context) {
     const { on, cwd: root } = context;
-    const entries = await directory(path ? `${root}/${path}` : root, on);
-    if (!this.current(context) || (path && !this.folders.has(path))) return;
+    let entries;
+    try { entries = await directory(path ? `${root}/${path}` : root, on); }
+    catch (error) {
+      if (this.current(context)) { this.folderErrors.set(path, String(error)); this.entries.delete(path); }
+      return;
+    }
+    if (!this.current(context) || (path && !this.folders.has(path) && !this.tabs.some(tab => tab.kind === "folder" && tab.path === path))) return;
+    this.folderErrors.delete(path);
     const used = [...this.entries.entries()].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
     this.entries.set(path, entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used))).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
@@ -267,14 +282,26 @@ export default class Files extends View {
   refresh(cx) {
     const { cwd, on } = location(), next = key();
     if (next !== this.context?.key) {
-      if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
+      if (this.context) {
+        this.saved.set(this.context.key, {
+          folders: this.folders,
+          tabs: this.tabs.map(({ kind, path, raw, wrap, detail, archiveQuery }) => ({ kind, path, raw, wrap, detail, archiveQuery })),
+          active: this.tabs.indexOf(this.activeTab),
+          tree: this.tabs.indexOf(this.treeTab),
+        });
+        for (const tab of this.tabs) this.releaseTab(tab, cx);
+      }
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
+      this.tabs = saved?.tabs ?? [];
+      this.activeTab = this.tabs[saved?.active];
+      this.treeTab = this.tabs[saved?.tree];
+      this.pending = new Set(); this.folderErrors = new Map(); this.marks = {}; this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
       this.transferStatus = null;
       this.menu = this.action = this.dropHover = this.drag = null;
-      if (saved?.file) this.show(saved.file, cx);
+      const tab = this.activeTab;
+      if (tab?.kind === "file") cx.spawn(async cx => { if (this.activeTab === tab) this.activateTab(tab, cx); });
     }
     if (!cwd || this.loading) return;
     const context = this.context;
@@ -282,7 +309,8 @@ export default class Files extends View {
     this.limited = false;
     cx.spawn(async cx => {
       try {
-        for (const path of ["", ...this.folders]) {
+        const paths = new Set(["", ...this.folders, ...this.tabs.filter(tab => tab.kind === "folder").map(tab => tab.path)]);
+        for (const path of paths) {
           if (!this.current(context)) return;
           await this.loadFolder(path, context);
         }
@@ -307,60 +335,126 @@ export default class Files extends View {
     if (this.folders.has(path)) {
       for (const folder of [...this.folders]) if (folder === path || folder.startsWith(path + "/")) {
         this.folders.delete(folder);
-        this.entries.delete(folder);
+        if (!this.tabs.some(tab => tab.kind === "folder" && tab.path === folder)) this.entries.delete(folder);
       }
     } else {
       this.folders.add(path);
-      if (!this.entries.has(path) && !this.pending.has(path)) {
-        const context = this.context;
-        this.pending.add(path);
-        cx.spawn(async cx => {
-          try { await this.loadFolder(path, context); }
-          catch (e) { if (this.current(context)) this.error = String(e); }
-          finally { if (this.context === context) this.pending.delete(path); cx.notify(); }
-        });
-      }
+      this.ensureFolder(path, cx);
     }
     cx.notify();
   }
 
-  show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
-    this.menu = this.action = this.dropHover = this.drag = null;
-    if (!this.transferring) this.transferStatus = null;
-    const request = this.previewRequest = {};
-    const name = path?.split("/").pop();
-    const ext = name?.includes(".") ? name.split(".").pop().toLowerCase() : "txt";
-    this.format = ["md", "markdown", "mdown", "mkd"].includes(ext) ? "markdown"
-      : ["html", "htm"].includes(ext) ? "html" : null;
-    this.raw = !this.format;
-    this.wrap = true;
-    this.source = null;
-    if (!path || !cx) return;
-    const context = this.context, root = this.root, on = this.on;
+  ensureFolder(path, cx) {
+    if (this.entries.has(path) || this.pending.has(path)) return;
+    const context = this.context;
+    this.pending.add(path);
     cx.spawn(async cx => {
-      try {
-        const text = await readTextFile(`${root}/${path}`, { on });
-        if (this.previewRequest !== request || !this.current(context)) return;
-        if (text === null) { this.fileError = "This file is no longer available"; return; }
-        if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        this.language = ext;
-        this.source = text.slice(0, 400000);
-        this.truncated = this.source.length < text.length;
-        this.createEditor();
-      } catch { if (this.previewRequest === request && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
-      finally { cx.notify(); }
+      try { await this.loadFolder(path, context); }
+      catch (e) { if (this.current(context)) this.error = String(e); }
+      finally { if (this.context === context) this.pending.delete(path); cx.notify(); }
     });
   }
 
-  createEditor() {
-    const t = theme(), language = this.language;
+  openTab(path, kind, cx) {
+    let tab = this.tabs.find(tab => tab.path === path && tab.kind === kind);
+    if (!tab) {
+      tab = { path, kind };
+      this.tabs.push(tab);
+    }
+    this.activateTab(tab, cx);
+  }
+
+  activateTab(tab, cx) {
+    if (tab && !this.tabs.includes(tab)) return;
+    this.activeTab = tab;
+    if (!tab || tab.kind === "folder") this.treeTab = tab;
+    this.menu = this.action = this.dropHover = this.drag = null;
+    this.tabScroll.scroll_to_item(tab ? this.tabs.indexOf(tab) + 1 : 0);
+    if (tab?.kind === "file") {
+      this.archiveSearch.set_value(tab.archiveQuery ?? "");
+      if (!tab.started) this.loadFile(tab, cx);
+    }
+    if (tab?.kind === "folder") this.ensureFolder(tab.path, cx);
+    cx.notify();
+  }
+
+  releaseTab(tab, cx) {
+    if (!tab.code && !tab.media) return;
+    cx.spawn(async () => {
+      tab.code?.release();
+      await releasePreview(tab.media?.absolute);
+    });
+  }
+
+  closeTab(tab, cx) {
+    const index = this.tabs.indexOf(tab);
+    if (index < 0) return;
+    this.tabs.splice(index, 1);
+    this.releaseTab(tab, cx);
+    if (this.treeTab === tab) this.treeTab = undefined;
+    if (this.activeTab === tab) this.activateTab(this.tabs[index] ?? this.tabs[index - 1], cx);
+    else cx.notify();
+  }
+
+  loadFile(tab, cx) {
+    const format = previewFormat(tab.path);
+    const request = tab.request = {};
+    tab.started = tab.loading = true;
+    tab.format = format.kind;
+    tab.raw ??= !format.kind;
+    tab.wrap ??= true;
+    const context = this.context, root = this.root, on = this.on;
+    const file = root + "/" + tab.path;
+    const current = () => this.tabs.includes(tab) && tab.request === request && this.current(context);
+    cx.spawn(async cx => {
+      try {
+        if (format.kind === "image" || format.kind === "pdf") {
+          const preview = await loadImagePreview(file, format, on,
+            output => remoteCopy(file, "", "", on, false, output, 64 * 1024 * 1024));
+          if (current()) tab.media = preview;
+          else await releasePreview(preview.absolute);
+          return;
+        }
+        if (format.kind === "archive") {
+          const archive = await listArchive(file, format.ext, on);
+          if (current()) tab.archive = archive;
+          return;
+        }
+        let excerpt = false;
+        const text = await readTextFile(file, { on }).catch(error => {
+          if (!String(error).includes("exceeds 1 MiB")) throw error;
+          excerpt = true;
+          return readTextExcerpt(file, on);
+        });
+        if (!current()) return;
+        if (text === null) { tab.error = "This file is no longer available"; return; }
+        if (text.includes("\0")) { tab.error = "Binary file · no text preview"; return; }
+        tab.language = format.ext;
+        tab.source = text.slice(0, 400000);
+        tab.truncated = excerpt || tab.source.length < text.length;
+        if (format.kind === "table") {
+          tab.table = parseTable(tab.source.replace(/^\uFEFF/, ""), format.ext === "tsv" ? "\t" : ",");
+        }
+        this.createEditor(tab);
+      } catch {
+        if (!current()) return;
+        tab.error = format.kind === "image" ? "Cannot decode this image for preview. You can still download the original."
+          : format.kind === "pdf" ? "Cannot render page one. PDF preview requires Poppler. You can still download the original."
+          : format.kind === "archive" ? "Cannot read this archive’s file list. It may be damaged or the archive reader may be unavailable."
+          : "Cannot preview this file as text. It may be binary, unreadable, or larger than 1 MiB.";
+      }
+      finally { if (current()) { tab.loading = false; cx.notify(); } }
+    });
+  }
+
+  createEditor(tab) {
+    const t = theme(), language = tab.language;
     const code = EditorState.new({ language: LANG[language] ?? language, readonly: true,
-      value: this.source, soft_wrap: this.wrap,
+      value: tab.source, soft_wrap: tab.wrap,
       font_family: settings().font_family, font_size: settings().font_size,
       syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-    this.code?.release();
-    this.code = code;
+    tab.code?.release();
+    tab.code = code;
   }
 
   button(id, label, action, t) {
@@ -387,7 +481,9 @@ export default class Files extends View {
 
   pickAction(op, target, cx) {
     this.menu = null;
-    if (op === "copy" || op === "cut") {
+    if (op === "open-tab") {
+      this.openTab(target.path, target.isFolder ? "folder" : "file", cx);
+    } else if (op === "copy" || op === "cut") {
       this.clipboard = { path: this.root + "/" + target.path, name: target.path.split("/").pop(), on: this.on, cut: op === "cut" };
     } else if (op === "paste") {
       const item = this.clipboard;
@@ -436,9 +532,19 @@ export default class Files extends View {
         if (this.transferStatus) this.clearStatusSoon(context, cx);
         if (op === "move" || op === "delete") {
           const prefix = source.slice(context.cwd.length + 1);
+          const movedTo = destination.slice(context.cwd.length + 1);
           for (const folder of this.folders) {
             if (folder === prefix || folder.startsWith(prefix + "/")) {
               this.folders.delete(folder); this.entries.delete(folder);
+            }
+          }
+          for (const tab of [...this.tabs]) {
+            if (tab.path !== prefix && !tab.path.startsWith(prefix + "/")) continue;
+            if (op === "delete") this.closeTab(tab, cx);
+            else {
+              this.entries.delete(tab.path);
+              tab.path = movedTo + tab.path.slice(prefix.length);
+              if (tab.loading) this.loadFile(tab, cx);
             }
           }
         }
@@ -457,7 +563,7 @@ export default class Files extends View {
     const target = this.menu, bounds = this.panelBounds;
     const width = Math.max(1, Math.min(188, (bounds?.width ?? 196) - 8));
     const x = bounds ? Math.max(4, Math.min(target.point.x - bounds.x, bounds.width - width - 4)) : 4;
-    const count = target.path ? 7 : 3;
+    const count = target.path ? 8 : 3;
     const y = bounds ? Math.max(4, Math.min(target.point.y - bounds.y, bounds.height - count * 25 - 14)) : 44;
     const row = (op, label, disabled = false) => div().id("files-menu-" + op).h(25).px(8).flex().items_center().rounded(4)
       .text_color(disabled ? t.dim : op === "delete" ? t.ansi1 : t.foreground)
@@ -467,6 +573,7 @@ export default class Files extends View {
     return v_flex().id("files-menu").absolute().left(x).top(y).w(width).p(4).rounded(7)
       .shadow_md().bg(t.popover).border_1().border_color(t.border)
       .on_mouse_down_out((_e, cx) => { this.menu = null; cx.notify(); })
+      .when(Boolean(target.path), el => el.child(row("open-tab", "Open in New Tab")))
       .child(row("new-file", "New file…")).child(row("new-folder", "New folder…"))
       .when(Boolean(target.path), el => el.child(row("cut", "Cut")).child(row("copy", "Copy")))
       .child(row("paste", "Paste", !this.clipboard || this.clipboard.on !== this.on))
@@ -588,7 +695,7 @@ export default class Files extends View {
     if (!this.current(drag.context) || this.menu || this.action) return;
     const moved = drag.active || Math.hypot(event.position.x - drag.start.x, event.position.y - drag.start.y) >= 5;
     if (!moved) {
-      if (path === drag.path) isFolder ? this.toggle(path, cx) : this.show(path, cx);
+      if (path === drag.path) isFolder ? this.toggle(path, cx) : this.openTab(path, "file", cx);
       return;
     }
     const destination = this.moveDestination(drag.path, folder);
@@ -629,19 +736,61 @@ export default class Files extends View {
     }));
   }
 
-  download(cx) {
-    const source = this.root + "/" + this.file;
+  download(tab, cx) {
+    const source = this.root + "/" + tab.path;
     this.transfer(cx, async () => {
       const folder = await pickFolder({ prompt: "Download to folder" });
       return { folder, paths: folder ? [source] : [] };
     });
   }
 
-  previewFile(t) {
-    if (!this.code) return div().p(12).text_color(t.dim).child(this.fileError || "Loading file…");
-    if (this.raw) return Editor.new(this.code).flex_1().min_h(0).min_w(0);
-    return TextView[this.format]("files-preview-" + this.file, this.source)
+  previewFile(tab, t) {
+    if (tab.media) {
+      const { asset, width, height } = tab.media;
+      return v_flex().id("files-image-" + tab.path).flex_1().min_h(0).min_w(0).p(8)
+        .when(tab.detail, el => el.overflow_scrollbar())
+        .when(!tab.detail, el => el.overflow_hidden())
+        .child(image(asset).id(asset)
+          .when(tab.detail, el => el.w(width).h(height).flex_none())
+          .when(!tab.detail, el => el.size_full()));
+    }
+    if (tab.archive) return this.previewArchive(tab, t);
+    if (!tab.code) return div().p(12).text_color(t.dim).child(tab.error || "Loading file…");
+    if (tab.raw) return Editor.new(tab.code).flex_1().min_h(0).min_w(0);
+    if (tab.table) return this.previewTable(tab, t);
+    return TextView[tab.format]("files-preview-" + tab.path, tab.source)
       .selectable().scrollable().flex_1().min_h(0).min_w(0).p(12);
+  }
+
+  previewArchive(tab, t) {
+    const query = (tab.archiveQuery ?? "").trim().toLowerCase();
+    const entries = tab.archive.entries.filter(([name]) => name.toLowerCase().includes(query));
+    const summary = (tab.archive.truncated ? "First " : "") + tab.archive.entries.length + " entries";
+    const readable = name => name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "�");
+    return v_flex().flex_1().min_h(0).min_w(0).gap(4).p(8)
+      .child(Input.new(this.archiveSearch).h(29).px(7).rounded(5).border_1().border_color(t.input))
+      .child(div().text_size(11).text_color(t.dim).child(query ? entries.length + " matches · " + summary : summary + " · Filter by path"))
+      .child(v_flex().id("files-archive-" + tab.path).flex_1().min_h(0).overflow_y_scrollbar()
+        .when(!entries.length, el => el.child(div().p(8).text_color(t.dim).child(query ? "No matching entries" : "Empty archive")))
+        .children(entries.map(([name, size], index) => h_flex().id("archive-entry-" + index).h(25).flex_none().gap(6).items_center().px(4)
+          .hover(el => el.bg(t.hover)).tooltip(readable(name))
+          .child(svg("mods/files/" + (size === null ? "folder" : "file") + ".svg").size(13).flex_none().text_color(t.muted))
+          .child(div().flex_1().min_w(0).truncate().child(readable(name)))
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(size === null ? "" : formatBytes(size))))));
+  }
+
+  previewTable(tab, t) {
+    const { rows, truncated } = tab.table;
+    const count = Math.max(0, ...rows.map(row => row.length));
+    return v_flex().flex_1().min_h(0).min_w(0).p(8).gap(5)
+      .child(div().text_size(11).text_color(t.dim).child(rows.length + " rows · " + count + " columns" + (truncated ? " · Preview limited" : "")))
+      .child(v_flex().id("files-table-" + tab.path).flex_1().min_h(0).min_w(0).overflow_scrollbar()
+        .children(rows.map((row, index) => h_flex().h(26).flex_none().w(40 + count * 140).border_b(1).border_color(t.border)
+          .when(index % 2 !== 0, el => el.bg(t.surface))
+          .child(div().w(40).flex_none().px(4).text_size(11).text_color(t.dim).child(String(index + 1)))
+          .children(row.map((value, column) => div().id("table-cell-" + index + "-" + column).w(140).flex_none().px(6)
+            .truncate().border_l(1).border_color(t.border)
+            .when(Boolean(value), el => el.tooltip(value)).child(value.replace(/[\r\n]+/g, " ")))))));
   }
 
   rows(prefix, depth, out, t) {
@@ -658,17 +807,40 @@ export default class Files extends View {
       const folder = entry.dir ? path : prefix;
       const targeted = Boolean(folder && this.dropHover?.folder === folder && entry.dir);
       out.push(this.contextMenu(this.dropTarget(row, folder, "row:" + path, t, path, entry.dir, out.length)
-        .when(targeted, el => el.bg(t.selected)), { path, folder }));
+        .when(targeted, el => el.bg(t.selected)), { path, folder, isFolder: entry.dir }));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
     return out;
   }
 
+  renderTabs(t) {
+    const item = tab => {
+      const id = tab ? tab.kind + "-" + tab.path : "explorer";
+      const selected = this.activeTab === tab;
+      return h_flex().id("files-tab-" + id).h(27).flex_none().items_center().rounded(5)
+        .bg(selected ? t.selected : t.background)
+        .child(h_flex().id("files-tab-open-" + id).h_full().min_w(0).max_w(158).px(7).gap(5).items_center()
+          .cursor_pointer().rounded(5).text_color(selected ? t.foreground : t.muted).hover(s => s.bg(t.hover))
+          .on_click((_e, cx) => this.activateTab(tab, cx))
+          .when(Boolean(tab), el => el.tooltip(tab.path)
+            .child(svg("mods/files/" + (tab.kind === "folder" ? "folder" : "file") + ".svg").size(12).flex_none()))
+          .child(div().min_w(0).truncate().child(tab ? tab.path.split("/").pop() : "Explorer")))
+        .when(Boolean(tab), el => el.child(div().id("files-tab-close-" + id).size(21).flex_none().flex().items_center().justify_center()
+          .rounded(4).cursor_pointer().text_color(t.muted).hover(s => s.bg(t.hover)).tooltip("Close tab")
+          .on_click((_e, cx) => { cx.stop_propagation(); this.closeTab(tab, cx); }).child("×")));
+    };
+    return h_flex().id("files-tabs").h(36).flex_none().items_center().gap(3).px(5)
+      .border_b(1).border_color(t.border).overflow_x_scrollbar().track_scroll(this.tabScroll)
+      .child(item(undefined)).children(this.tabs.map(item));
+  }
+
   render(cx) {
     if (key() !== this.context?.key) this.refresh(cx);
     const t = theme();
-    const root = { path: "", folder: "" };
-    const rows = this.file ? [] : this.rows("", 0, [], t);
+    const file = this.activeTab?.kind === "file" ? this.activeTab : null;
+    const scope = this.treeTab?.path ?? "";
+    const root = { path: "", folder: scope };
+    const rows = this.rows(scope, 0, [], t);
     this.rowCount = rows.length;
     return v_flex().id("files").relative().track_focus(this.focus).size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .on_mouse_move((event) => { this.panelBounds = event.bounds; })
@@ -681,24 +853,19 @@ export default class Files extends View {
         if (event.key === "escape" && (this.menu || this.action)) { cx.stop_propagation(); this.dismiss(cx); }
       })
       .child(h_flex().id("files-header").h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .when(!this.file, el => this.contextMenu(this.dropTarget(el, "", "header", t), root)
-          .on_mouse_move((_event) => { if (this.drag) this.drag.scroll = null; }))
-        .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
+        .when(Boolean(this.root), el => this.contextMenu(this.dropTarget(el, scope, "header", t), root)
+          .on_mouse_move(() => { if (this.drag) this.drag.scroll = null; }))
         .child(div().font_semibold().child("Files"))
-        .when(this.transferring || this.managing, el => el.child(svg("mods/workspace-chrome/spinner.svg")
+        .when(this.transferring || this.managing || file?.loading, el => el.child(svg("mods/workspace-chrome/spinner.svg")
           .size(11).flex_none().text_color(t.accent).spin(900)))
         .child(div().id("files-status").flex_1().min_w(0).truncate().text_right().text_size(12)
           .text_color(this.transferring || this.managing ? t.accent : t.dim)
           .when(Boolean(this.transferStatus), el => el.tooltip(this.transferStatus))
-          .child(this.transferStatus?.split("\n")[0] || this.file || this.root?.split(/[\\/]/).pop() || "")))
-      .when(Boolean(this.file), el => el.child(h_flex().flex_none().flex_wrap().px(7).py(3).gap(4)
-        .when(Boolean(this.file && this.format), el => el.child(this.button("files-mode", this.raw ? "Preview" : "Raw", cx => { this.raw = !this.raw; cx.notify(); }, t)))
-        .when(Boolean(this.code && this.raw), el => el.child(this.button("files-wrap", this.wrap ? "Wrap on" : "Wrap off", cx => {
-          this.wrap = !this.wrap; this.createEditor(); cx.notify();
-        }, t)))
-        .when(this.canTransfer(), el => el.child(this.button("files-download", "Download", cx => this.download(cx), t)))))
-      .when(Boolean(this.code && this.truncated), el => el.child(div().px(12).py(4).text_size(12).text_color(t.dim).child("Preview truncated")))
-      .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.treeScroll).p(6)
+          .child(this.transferStatus?.split("\n")[0] || scope || this.root?.split(/[\\/]/).pop() || "")))
+      .when(this.tabs.length > 0, el => el.child(this.renderTabs(t)))
+      .child(v_flex().id("files-tree").min_h(0).overflow_y_scrollbar().track_scroll(this.treeScroll).p(6)
+        .when(Boolean(file), el => el.h_1_3().flex_none().border_b(1).border_color(t.border))
+        .when(!file, el => el.flex_1())
         .on_mouse_move(event => {
           const drag = this.drag;
           if (!drag?.active) return;
@@ -708,9 +875,20 @@ export default class Files extends View {
         .children(rows)
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))
         .child(this.contextMenu(this.dropTarget(div().id("files-root-drop").flex_1().min_h(32).rounded(7)
-          .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.p(8).text_size(12).text_color(t.dim)
-            .child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))), "", "background", t), root))))
-      .when(Boolean(this.file), el => el.child(this.previewFile(t)))
+          .when(Boolean(this.error || this.folderErrors.get(scope)) || !this.entries.get(scope)?.length, el => el.p(8).text_size(12).text_color(t.dim)
+            .child(this.error || this.folderErrors.get(scope) || (this.pending.has(scope) || this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))), scope, "background", t), root)))
+      .when(Boolean(file), el => el.child(h_flex().flex_none().flex_wrap().px(7).py(3).gap(4)
+        .when(Boolean(file.code && file.format), el => el.child(this.button("files-mode", file.raw ? "Preview" : "Raw", cx => { file.raw = !file.raw; cx.notify(); }, t)))
+        .when(Boolean(file.media), el => el
+          .child(this.button("files-detail", file.detail ? "Fit" : "100%", cx => { file.detail = !file.detail; cx.notify(); }, t))
+          .child(div().flex_none().px(5).py(4).text_size(11).text_color(t.dim)
+            .child(file.format === "pdf" ? "Page 1" : file.media.width + " × " + file.media.height + " preview")))
+        .when(Boolean(file.code && file.raw), el => el.child(this.button("files-wrap", file.wrap ? "Wrap on" : "Wrap off", cx => {
+          file.wrap = !file.wrap; this.createEditor(file); cx.notify();
+        }, t)))
+        .when(this.canTransfer(), el => el.child(this.button("files-download", "Download", cx => this.download(file, cx), t)))))
+      .when(Boolean(file?.truncated), el => el.child(div().px(12).py(4).text_size(12).text_color(t.dim).child("Preview truncated")))
+      .when(Boolean(file), el => el.child(this.previewFile(file, t)))
       .when(Boolean(this.menu), el => el.child(this.renderMenu(t)))
       .when(Boolean(this.action), el => el.child(this.renderAction(t)))
       .when(Boolean(this.drag?.active && this.drag.point && this.panelBounds), el => el.child(this.dragPreview(t)));
