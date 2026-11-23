@@ -1105,9 +1105,8 @@ The full surface is in `gpui-kit.d.ts` next to this file.
 The Files panel opens Markdown and HTML in a formatted preview. **Raw** shows
 the source, with word wrap on by default. HTML preview supports formatted
 document text. Raster images have Fit and 100% views of a scaled preview.
-Open a file to add a tab inside Files while keeping the tree visible. Right-click
-a file or folder and choose **Open in New Tab**. **Explorer** returns to
-the workspace tree at full height.
+Open a file to add a full-height preview tab inside Files. Right-click a file
+or folder and choose **Open in New Tab**. **Explorer** opens the workspace tree.
 Animated images show one frame. ZIP and TAR previews list and filter entries
 without unpacking them. CSV and TSV have a table and Raw view, and large text
 files can show an excerpt. PDF shows page one when Poppler is available on

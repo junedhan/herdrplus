@@ -840,7 +840,7 @@ export default class Files extends View {
     const file = this.activeTab?.kind === "file" ? this.activeTab : null;
     const scope = this.treeTab?.path ?? "";
     const root = { path: "", folder: scope };
-    const rows = this.rows(scope, 0, [], t);
+    const rows = file ? [] : this.rows(scope, 0, [], t);
     this.rowCount = rows.length;
     return v_flex().id("files").relative().track_focus(this.focus).size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .on_mouse_move((event) => { this.panelBounds = event.bounds; })
@@ -853,7 +853,7 @@ export default class Files extends View {
         if (event.key === "escape" && (this.menu || this.action)) { cx.stop_propagation(); this.dismiss(cx); }
       })
       .child(h_flex().id("files-header").h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(this.root), el => this.contextMenu(this.dropTarget(el, scope, "header", t), root)
+        .when(Boolean(this.root && !file), el => this.contextMenu(this.dropTarget(el, scope, "header", t), root)
           .on_mouse_move(() => { if (this.drag) this.drag.scroll = null; }))
         .child(div().font_semibold().child("Files"))
         .when(this.transferring || this.managing || file?.loading, el => el.child(svg("mods/workspace-chrome/spinner.svg")
@@ -863,9 +863,7 @@ export default class Files extends View {
           .when(Boolean(this.transferStatus), el => el.tooltip(this.transferStatus))
           .child(this.transferStatus?.split("\n")[0] || scope || this.root?.split(/[\\/]/).pop() || "")))
       .when(this.tabs.length > 0, el => el.child(this.renderTabs(t)))
-      .child(v_flex().id("files-tree").min_h(0).overflow_y_scrollbar().track_scroll(this.treeScroll).p(6)
-        .when(Boolean(file), el => el.h_1_3().flex_none().border_b(1).border_color(t.border))
-        .when(!file, el => el.flex_1())
+      .when(!file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.treeScroll).p(6)
         .on_mouse_move(event => {
           const drag = this.drag;
           if (!drag?.active) return;
@@ -876,7 +874,7 @@ export default class Files extends View {
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))
         .child(this.contextMenu(this.dropTarget(div().id("files-root-drop").flex_1().min_h(32).rounded(7)
           .when(Boolean(this.error || this.folderErrors.get(scope)) || !this.entries.get(scope)?.length, el => el.p(8).text_size(12).text_color(t.dim)
-            .child(this.error || this.folderErrors.get(scope) || (this.pending.has(scope) || this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))), scope, "background", t), root)))
+            .child(this.error || this.folderErrors.get(scope) || (this.pending.has(scope) || this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))), scope, "background", t), root))))
       .when(Boolean(file), el => el.child(h_flex().flex_none().flex_wrap().px(7).py(3).gap(4)
         .when(Boolean(file.code && file.format), el => el.child(this.button("files-mode", file.raw ? "Preview" : "Raw", cx => { file.raw = !file.raw; cx.notify(); }, t)))
         .when(Boolean(file.media), el => el
