@@ -1102,6 +1102,23 @@ The full surface is in `gpui-kit.d.ts` next to this file.
 
 ### The `herdr` module
 
+The Files panel opens Markdown and HTML in a formatted preview. **Raw** shows
+the source, with word wrap on by default. HTML preview supports formatted
+document text. Drag files from your file manager onto a folder row to copy
+them into that folder, or onto a file row to copy them beside that file.
+Drop on the Files header or the empty space below the tree to copy to the
+root. Open a file and choose **Download** to copy it to a folder you select.
+Transfers support local folders and, from Windows, remote Unix folders
+connected through Herdr Core. Existing destination files are preserved.
+Right-click a row to create, copy, cut, paste, rename or delete an item.
+Right-click the header or empty space to create or paste at the root.
+Drag a row inside the Files panel to move the item. Drop on a folder, on a
+file in the destination folder, or on the header or empty space for the root.
+The dragged item's name and destination follow the pointer. Hold over a
+folder to expand it, drag near an edge to scroll, or press Escape to cancel.
+Copy and Cut are kept in the Files panel for pasting on the same machine.
+Delete prompts first. Local Windows items go to the Recycle Bin.
+
 All of it is in `herdr.d.ts`. In short:
 
 - Live data: `spaces()` (each with its tabs, status, name, named, folder,

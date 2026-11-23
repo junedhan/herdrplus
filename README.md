@@ -1,4 +1,15 @@
-# Herdr
+# Herdr Plus
+
+**Stay in Herdr when you need to read, move, or transfer a file.**
+
+I started this fork because I liked running multiple coding agents in Herdr, but still opened VS Code for everyday tasks like reading a Markdown file, uploading an attachment, or moving a file between folders. Herdr Plus brings those tasks into the **Files** panel, right beside your terminals and agents.
+
+- **Read files comfortably.** Preview rendered Markdown and basic HTML, or switch to Raw with word wrap on by default.
+- **Move files visually.** Drag files and folders within the panel. The dragged item’s name follows your cursor, the destination is highlighted, and holding over a closed folder opens it.
+- **Transfer files from Windows.** Drop files from Explorer into a local or connected remote folder, or download a file back to your laptop.
+- **Manage files in place.** Right-click to create, rename, copy, cut, paste, or delete. Transfer progress stays in the Files header so the tree stays put.
+
+Herdr Plus builds on [Herdr Desktop](https://github.com/herdrdev/herdr-app). If you use Herdr every day, **try the fork and tell us which file task still sends you back to another editor.** Small pull requests and issue reports are welcome, especially reports about how drag-and-drop feels on your setup.
 
 Herdr is a desktop app for terminals and coding agents. Keep work in spaces, see which agents need you, and leave terminals running when you close the window.
 
