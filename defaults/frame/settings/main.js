@@ -952,7 +952,10 @@ export default class Settings extends View {
         cx.stop_propagation();
         cx.notify();
       })
-      .child(nav.h_full().child(div().flex_1()).child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); })))
+      .child(nav.h_full().child(div().flex_1())
+        .child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); }))
+        .child(this.button(t, "st-quit", "Quit Herdr", () => run("app.quit"))
+          .tooltip("Close Herdr completely. Existing terminals keep running.")))
       .child(
         // A bar that always shows: the pages are taller than the dialog and
         // people should see that they scroll.

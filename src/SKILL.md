@@ -1,7 +1,9 @@
 # herdr-app: drive the person's window
 
 Herdr shows spaces, tabs and panes. herdr-core (`hc`) runs their terminals
-and keeps them alive when the window closes. Use `herdr-app` only to change
+and keeps them alive when the window closes. On Windows, closing the window
+can hide it in the system tray. Use `herdr-app do app.quit` to exit the desktop
+app while leaving its terminals in the core. Use `herdr-app` only to change
 what the person sees. For starting, reading, messaging, waiting on or cleaning
 up agents and programs, read `hc --skill` and use hc.
 Your terminal address is `$HC_TERMINAL_ID`; it is not a pane ID.

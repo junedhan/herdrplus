@@ -199,6 +199,8 @@ fn main() {
                 for w in cx.windows() {
                     if let Some(w) = w.downcast::<window::AppWindow>() {
                         let _ = w.update(cx, |this, window, cx| {
+                            #[cfg(windows)]
+                            this.remove_tray_icon();
                             this.drain_documents(window, cx);
                             this.close_mods_now(deadline, window, cx);
                             place::save(window, cx);

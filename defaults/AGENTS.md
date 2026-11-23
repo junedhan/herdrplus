@@ -701,7 +701,10 @@ The main ones:
   explicitly forget the old identity and pair again with the same name and target.
   Other unreachable machines don't offer this.
 - Window: `window.minimize`, `window.maximize` (or back), `window.close`.
-- macOS: `app.quit`, `app.hide`, `app.hide_others`, `app.show_all`.
+- `app.quit` exits Herdr. On Windows, closing the main window hides it in the
+  system tray when available. Click the icon to reopen Herdr, or choose
+  **Quit Herdr** from the tray menu or Settings. The core keeps terminals running.
+- macOS: `app.hide`, `app.hide_others`, `app.show_all`.
 
 When the user runs a command without a required name (a key, a click), Herdr
 asks them. **You never get a dialog**: pass every required argument, or the
@@ -1108,8 +1111,10 @@ document text. Raster images have Fit and 100% views of a scaled preview.
 Open a file to add a full-height preview tab inside Files. Right-click a file
 or folder and choose **Open in New Tab**. **Explorer** opens the workspace tree.
 Animated images show one frame. ZIP and TAR previews list and filter entries
-without unpacking them. CSV and TSV have a table and Raw view, and large text
-files can show an excerpt. PDF shows page one when Poppler is available on
+without unpacking them. CSV, TSV, and Excel (.xlsx and .xlsm) have selectable
+table previews and **Copy table**. Excel can switch worksheets and uses Python
+3 on the file's machine. CSV and TSV also have a Raw view. Large text files
+can show an excerpt. PDF shows page one when Poppler is available on
 the machine rendering it. Drag files from your file manager onto a folder row to copy
 them into that folder, or onto a file row to copy them beside that file.
 Drop on the Files header or the empty space below the tree to copy to the

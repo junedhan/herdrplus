@@ -22,21 +22,14 @@ Herdr Plus keeps Herdr's spaces, agent and terminal tabs, split panes, SSH works
 | **Move items inside Files** | Clicking a folder expands it and clicking a file opens its preview. | Drag files and folders between directories. The item name follows the cursor, the destination lights up, holding over a folder opens it, and dragging near an edge scrolls. **Esc** cancels. |
 | **Manage files from the tree** | Read-only browsing and previews. | Right-click to create a file or folder, rename, cut, copy, paste, or delete. Cut and paste work within the same machine. Delete asks for confirmation. |
 | **Follow transfer progress** | Transfer controls are outside the Files panel. | A small spinner and status in the Files header leave the list or preview in place. |
+| **Select and copy table data** | Select raw CSV or TSV text in the source viewer. | Drag to select text in the rendered grid, or use **Copy table** to copy the displayed cells as tab-separated data. |
+| **Open an Excel workbook** | The Files viewer reads text. | Preview `.xlsx` and `.xlsm`, switch worksheets, and copy cells. Requires Python 3 on the file's machine. |
+| **Close to the Windows system tray** | Closing the window leaves terminal sessions running in Core. | **X** hides the main window in the tray. Click its icon to restore it. Choose **Quit Herdr** from the tray menu or Settings to exit the desktop app while Core keeps sessions running. |
 
 Remote image previews can use the server's Pillow or FFmpeg. On Windows, when
 the server lacks a renderer, supported images and PDFs up to 64 MiB can use
 a temporary local copy. Image previews are scaled to a maximum of 1,600 px
 on the longest side. PDF rendering requires Poppler.
-
-### Tested in the local build
-
-These changes have been tested locally and are pending publication to `master`.
-
-| Workflow | Herdr Desktop | Herdr Plus local build |
-| --- | --- | --- |
-| **Select and copy table data** | Select raw CSV or TSV text in the source viewer. | Drag to select text in the rendered grid, or use **Copy table** to copy the displayed cells as tab-separated data. |
-| **Open an Excel workbook** | The Files viewer reads text. | Preview `.xlsx` and `.xlsm`, switch worksheets, and copy cells. Requires Python 3 on the file's machine. |
-| **Close to the Windows system tray** | Closing the window leaves terminal sessions running in Core. | **X** hides the main window in the tray. Click its icon to restore it. Choose **Quit Herdr** from the tray menu or Settings to exit the desktop app while Core keeps sessions running. |
 
 **Which file task still sends you back to another editor?** Share it in
 [Issues](https://github.com/junedhan/herdrplus/issues), or open a pull request.

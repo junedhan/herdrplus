@@ -208,6 +208,10 @@ impl AppWindow {
     pub(super) fn window_command(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         match name {
             "window.close" => {
+                #[cfg(windows)]
+                if self.tray.as_ref().is_some_and(super::tray::Tray::hide) {
+                    return;
+                }
                 self.drain_documents(window, cx);
                 self.close_mods_now(std::time::Instant::now() + Duration::from_millis(250), window, cx);
                 crate::place::save(window, cx);
@@ -221,17 +225,22 @@ impl AppWindow {
             _ => {}
         }
     }
+
+    #[cfg(windows)]
+    pub(crate) fn remove_tray_icon(&mut self) {
+        self.tray.take();
+    }
 }
 
 #[cfg(windows)]
-mod win {
+pub(super) mod win {
     use super::*;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows_sys::Win32::UI::WindowsAndMessaging::{IsZoomed, PostMessageW, SC_MOVE, SW_MAXIMIZE, SW_RESTORE, ShowWindowAsync, WM_SYSCOMMAND};
 
-    fn hwnd(window: &Window) -> Option<HWND> {
+    pub(in crate::window) fn hwnd(window: &Window) -> Option<HWND> {
         match HasWindowHandle::window_handle(window).ok()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get() as HWND),
             _ => None,

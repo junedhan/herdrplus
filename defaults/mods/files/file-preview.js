@@ -30,9 +30,156 @@ export function previewFormat(path) {
   if (ext === "zip") return { kind: "archive", ext };
   if (/\.(?:tar(?:\.(?:gz|bz2|xz))?|tgz|tbz2|txz)$/.test(filename)) return { kind: "archive", ext: "tar" };
   if (["csv", "tsv"].includes(ext)) return { kind: "table", ext };
+  if (["xlsx", "xlsm"].includes(ext)) return { kind: "workbook", ext };
+  if (["xls", "xlsb"].includes(ext)) return { kind: "legacy-excel", ext };
   if (["md", "markdown", "mdown", "mkd"].includes(ext)) return { kind: "markdown", ext };
   if (["html", "htm"].includes(ext)) return { kind: "html", ext };
   return { kind: null, ext };
+}
+
+const pythonWorkbook = String.raw`
+import datetime, json, posixpath, re, sys, xml.etree.ElementTree as ET, zipfile
+
+path, selected = sys.argv[1], int(sys.argv[2])
+row_limit, column_limit = 150, 24
+ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+rel_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+class CheckedXML:
+    def __init__(self, stream):
+        self.stream, self.read_bytes, self.tail = stream, 0, b""
+
+    def read(self, size):
+        data = self.stream.read(size)
+        self.read_bytes += len(data)
+        if self.read_bytes > 32 * 1024 * 1024:
+            raise ValueError("Worksheet XML exceeds the preview limit")
+        checked = (self.tail + data).upper().replace(b"\0", b"")
+        if b"<!DOCTYPE" in checked or b"<!ENTITY" in checked:
+            raise ValueError("XML declarations are not supported")
+        self.tail = checked[-12:]
+        return data
+
+def read_xml(archive, name):
+    with archive.open(name) as stream:
+        return ET.parse(CheckedXML(stream)).getroot()
+
+def text(node):
+    if node is None:
+        return ""
+    fragments = (child.text or "" for child in list(node.findall(ns+"t")) + list(node.findall(ns+"r/"+ns+"t")))
+    return "".join(fragments)[:500]
+
+def col_index(address):
+    result = 0
+    for char in address:
+        if not ("A" <= char <= "Z"):
+            break
+        result = result * 26 + ord(char) - 64
+    return result - 1
+
+with zipfile.ZipFile(path) as archive:
+    book = read_xml(archive, "xl/workbook.xml")
+    links = read_xml(archive, "xl/_rels/workbook.xml.rels")
+    targets = {node.get("Id"): node.get("Target") for node in links
+               if node.get("Type", "").endswith("/worksheet") and node.get("TargetMode") != "External"}
+    sheets = [(node.get("name", "Sheet"), targets.get(node.get(rel_ns+"id")))
+              for node in book.findall(ns+"sheets/"+ns+"sheet")]
+    sheets = [(name, target) for name, target in sheets if target]
+    if not 0 <= selected < len(sheets):
+        raise ValueError("Workbook has no worksheet at that position")
+    target = sheets[selected][1]
+    sheet_path = posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join("xl", target))
+    if not sheet_path.startswith("xl/"):
+        raise ValueError("Invalid worksheet path")
+
+    styles, formats = [], {}
+    try:
+        style_xml = read_xml(archive, "xl/styles.xml")
+        formats = {int(n.get("numFmtId")): n.get("formatCode", "") for n in style_xml.findall(ns+"numFmts/"+ns+"numFmt")}
+        styles = [int(n.get("numFmtId", 0)) for n in style_xml.findall(ns+"cellXfs/"+ns+"xf")]
+    except KeyError:
+        pass
+    properties = book.find(ns+"workbookPr")
+    epoch1904 = properties is not None and properties.get("date1904") in ("1","true")
+
+    def numeric(value, cell):
+        style = cell.get("s", "0")
+        number_format = styles[int(style)] if style.isdigit() and int(style) < len(styles) else 0
+        custom = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", formats.get(number_format, "")).lower()
+        date = number_format in (14, 15, 16, 17, 22) or bool(re.search(r"[yd]", custom))
+        time = number_format in (18, 19, 20, 21, 22, 45, 47) or bool(re.search(r"[hs]", custom))
+        if not date and not time:
+            return value
+        try:
+            serial = float(value)
+            if not epoch1904 and date and 60 <= serial < 61:
+                return "1900-02-29"
+            epoch = datetime.datetime(1904, 1, 1) if epoch1904 else datetime.datetime(1899, 12, 30)
+            if not epoch1904 and 0 < serial < 60:
+                serial += 1
+            timestamp = epoch + datetime.timedelta(days=serial)
+            if date and time:
+                return timestamp.isoformat(" ", "seconds")
+            return timestamp.date().isoformat() if date else timestamp.time().isoformat(timespec="seconds")
+        except (ArithmeticError, ValueError):
+            return value
+
+    rows, row_numbers, refs, truncated = [], [], {}, False
+    with archive.open(sheet_path) as stream:
+        for event, node in ET.iterparse(CheckedXML(stream), events=("end",)):
+            if node.tag != ns+"row":
+                continue
+            if len(rows) == row_limit:
+                truncated = True
+                break
+            row = []
+            for cell in node.findall(ns+"c"):
+                column = col_index(cell.get("r", ""))
+                if column < 0:
+                    column = len(row)
+                if column >= column_limit:
+                    truncated = True
+                    continue
+                kind = cell.get("t", "n")
+                value = cell.findtext(ns+"v")
+                formula = cell.findtext(ns+"f")
+                if kind == "inlineStr":
+                    value = text(cell.find(ns+"is"))
+                elif kind == "s" and value is not None and value.isdigit():
+                    refs.setdefault(int(value), []).append((len(rows), column))
+                    value = ""
+                elif kind == "b":
+                    value = "TRUE" if value == "1" else "FALSE"
+                elif kind == "n" and value is not None:
+                    value = numeric(value, cell)
+                if value is None or (value == "" and formula and kind == "n"):
+                    value = "="+formula if formula else ""
+                row.extend([""] * max(0, column + 1 - len(row)))
+                row[column] = value[:500]
+            rows.append(row)
+            row_numbers.append(node.get("r", str(len(rows))))
+            node.clear()
+
+    if refs:
+        with archive.open("xl/sharedStrings.xml") as stream:
+            index = 0
+            for event, node in ET.iterparse(CheckedXML(stream), events=("end",)):
+                if node.tag != ns+"si":
+                    continue
+                for row, column in refs.pop(index, []):
+                    rows[row][column] = text(node)
+                if not refs:
+                    break
+                node.clear()
+                index += 1
+    print(json.dumps({"sheets": [name for name, _ in sheets], "sheet": selected,
+                      "rows": rows, "rowNumbers": row_numbers, "truncated": truncated}, ensure_ascii=False))
+`;
+
+export async function loadWorkbook(path, on, sheet = 0) {
+  const python = windows() && !on ? "python" : "python3";
+  return JSON.parse(await command(python, ["-X", "utf8", "-c", pythonWorkbook, path, String(sheet)], { on, timeout: 45000 }));
 }
 
 const pythonArchive = `

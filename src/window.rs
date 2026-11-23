@@ -10,6 +10,8 @@ mod movable;
 mod pane_drag;
 mod pane_size;
 mod titlebar;
+#[cfg(windows)]
+mod tray;
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
 use crate::model::{self, Tab, Model};
@@ -513,6 +515,8 @@ pub struct AppWindow {
     _focus_lost: Option<Subscription>,
     /// Remembers where the window is (`place.rs`); the write waiting to settle.
     _place: Option<Subscription>,
+    #[cfg(windows)]
+    tray: Option<tray::Tray>,
     place_write: Option<Task<()>>,
 }
 
@@ -618,6 +622,10 @@ impl AppWindow {
             _tasks: Vec::new(),
             _focus_lost: None,
             _place: None,
+            #[cfg(windows)]
+            tray: mods::request_sender().and_then(|requests| tray::Tray::new(window, move || {
+                let _ = requests.try_send(Request::Run { name: "app.quit".into(), args: json!({}) });
+            })),
             place_write: None,
         };
         w._focus_lost = Some(cx.on_focus_lost(window, |this, window, cx| this.restore_focus(window, cx)));
@@ -632,6 +640,10 @@ impl AppWindow {
             // the Dock icon or a new launch brings it back, Cmd+Q quits.
             if cfg!(target_os = "macos") {
                 cx.hide();
+                return false;
+            }
+            #[cfg(windows)]
+            if closing.update(cx, |this, _| this.tray.as_ref().is_some_and(tray::Tray::hide)).unwrap_or(false) {
                 return false;
             }
             let _ = closing.update(cx, |this, cx| {
@@ -4206,6 +4218,8 @@ impl AppWindow {
         }
         // Herdr was launched again: this window comes to the front instead.
         if cmd.get("raise").is_some() {
+            #[cfg(windows)]
+            if let Some(tray) = &self.tray { tray.reveal(); }
             cx.activate(true);
             window.activate_window();
             return json!({ "ok": true });

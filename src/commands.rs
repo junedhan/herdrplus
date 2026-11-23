@@ -103,11 +103,11 @@ pub const COMMANDS: &[Command] = &[
     cmd("app.zoom_out", &[], "Make everything smaller."),
     cmd("app.zoom_reset", &[], "Back to normal size."),
     cmd("app.update", &[], "Restart into the update Herdr downloaded (your terminals keep running)."),
-    cmd("app.quit", &[], "Quit (macOS)."),
+    cmd("app.quit", &[], "Quit Herdr. The core keeps terminals running."),
     cmd("app.hide", &[], "Hide the app (macOS)."),
     cmd("app.hide_others", &[], "Hide other apps (macOS)."),
     cmd("app.show_all", &[], "Show all apps (macOS)."),
-    cmd("window.close", &[], "Close the window (on Linux, quits)."),
+    cmd("window.close", &[], "Close the window (on Windows, hide it in the system tray when available)."),
     cmd("window.minimize", &[], "Minimize the window."),
     cmd("window.maximize", &[], "Maximize the window, or back."),
 ];

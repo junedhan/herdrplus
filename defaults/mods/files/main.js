@@ -2,7 +2,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, Input, InputState, ScrollHandle, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, pickFolder } from "herdr";
-import { listArchive, loadImagePreview, parseTable, powershell, previewFormat, psQuote, readTextExcerpt, releasePreview, windows, windowsArg } from "./file-preview.js";
+import { listArchive, loadImagePreview, loadWorkbook, parseTable, powershell, previewFormat, psQuote, readTextExcerpt, releasePreview, windows, windowsArg } from "./file-preview.js";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -285,7 +285,7 @@ export default class Files extends View {
       if (this.context) {
         this.saved.set(this.context.key, {
           folders: this.folders,
-          tabs: this.tabs.map(({ kind, path, raw, wrap, detail, archiveQuery }) => ({ kind, path, raw, wrap, detail, archiveQuery })),
+          tabs: this.tabs.map(({ kind, path, raw, wrap, detail, archiveQuery, sheet }) => ({ kind, path, raw, wrap, detail, archiveQuery, sheet })),
           active: this.tabs.indexOf(this.activeTab),
           tree: this.tabs.indexOf(this.treeTab),
         });
@@ -398,6 +398,10 @@ export default class Files extends View {
 
   loadFile(tab, cx) {
     const format = previewFormat(tab.path);
+    if (format.kind === "workbook") {
+      this.loadSheet(tab, tab.sheet ?? 0, cx);
+      return;
+    }
     const request = tab.request = {};
     tab.started = tab.loading = true;
     tab.format = format.kind;
@@ -408,6 +412,10 @@ export default class Files extends View {
     const current = () => this.tabs.includes(tab) && tab.request === request && this.current(context);
     cx.spawn(async cx => {
       try {
+        if (format.kind === "legacy-excel") {
+          tab.error = "Preview supports .xlsx and .xlsm workbooks. Download this file to open it in Excel.";
+          return;
+        }
         if (format.kind === "image" || format.kind === "pdf") {
           const preview = await loadImagePreview(file, format, on,
             output => remoteCopy(file, "", "", on, false, output, 64 * 1024 * 1024));
@@ -433,7 +441,7 @@ export default class Files extends View {
         tab.source = text.slice(0, 400000);
         tab.truncated = excerpt || tab.source.length < text.length;
         if (format.kind === "table") {
-          tab.table = parseTable(tab.source.replace(/^\uFEFF/, ""), format.ext === "tsv" ? "\t" : ",");
+          this.setTable(tab, parseTable(tab.source.replace(/^\uFEFF/, ""), format.ext === "tsv" ? "\t" : ","));
         }
         this.createEditor(tab);
       } catch {
@@ -445,6 +453,48 @@ export default class Files extends View {
       }
       finally { if (current()) { tab.loading = false; cx.notify(); } }
     });
+  }
+
+  loadSheet(tab, sheet, cx) {
+    const context = this.context, request = tab.request = {};
+    const file = this.root + "/" + tab.path, on = this.on;
+    tab.started = tab.loading = true;
+    tab.error = null;
+    const current = () => this.tabs.includes(tab) && tab.request === request && this.current(context);
+    cx.spawn(async cx => {
+      try {
+        const workbook = await loadWorkbook(file, on, sheet);
+        if (!current()) return;
+        tab.sheet = workbook.sheet;
+        tab.sheets = workbook.sheets;
+        this.setTable(tab, workbook);
+      } catch {
+        if (current()) tab.error = "Cannot read this worksheet. Excel preview requires Python 3 on the machine where the file is stored.";
+      } finally {
+        if (current()) { tab.loading = false; cx.notify(); }
+      }
+    });
+    cx.notify();
+  }
+
+  setTable(tab, table) {
+    const escape = value => String(value).replace(/[&<>]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
+    const width = Math.max(0, ...table.rows.map(row => row.length));
+    const rows = table.rows.map((row, index) =>
+      "<tr><th>" + escape(table.rowNumbers?.[index] ?? index + 1) + "</th>" +
+      Array.from({ length: width }, (_, i) => "<td>" + escape(row[i] ?? "").replace(/[\r\n]+/g, " ") + "</td>").join("") + "</tr>");
+    tab.table = table;
+    tab.tableWidth = width;
+    tab.tableHtml = "<table><tbody>" + rows.join("") + "</tbody></table>";
+  }
+
+  copyTable(tab, cx) {
+    const quote = value => /["\r\n\t]/.test(value) ? '"' + value.replaceAll('"', '""') + '"' : value;
+    const text = tab.table.rows.map(row => Array.from({ length: tab.tableWidth }, (_, i) => quote(row[i] ?? "")).join("\t")).join("\r\n");
+    cx.write_to_clipboard(text);
+    this.transferStatus = "Copied displayed cells";
+    this.clearStatusSoon(this.context, cx);
+    cx.notify();
   }
 
   createEditor(tab) {
@@ -755,9 +805,9 @@ export default class Files extends View {
           .when(!tab.detail, el => el.size_full()));
     }
     if (tab.archive) return this.previewArchive(tab, t);
+    if (tab.table && !tab.raw) return this.previewTable(tab, t);
     if (!tab.code) return div().p(12).text_color(t.dim).child(tab.error || "Loading file…");
     if (tab.raw) return Editor.new(tab.code).flex_1().min_h(0).min_w(0);
-    if (tab.table) return this.previewTable(tab, t);
     return TextView[tab.format]("files-preview-" + tab.path, tab.source)
       .selectable().scrollable().flex_1().min_h(0).min_w(0).p(12);
   }
@@ -781,16 +831,11 @@ export default class Files extends View {
 
   previewTable(tab, t) {
     const { rows, truncated } = tab.table;
-    const count = Math.max(0, ...rows.map(row => row.length));
     return v_flex().flex_1().min_h(0).min_w(0).p(8).gap(5)
-      .child(div().text_size(11).text_color(t.dim).child(rows.length + " rows · " + count + " columns" + (truncated ? " · Preview limited" : "")))
-      .child(v_flex().id("files-table-" + tab.path).flex_1().min_h(0).min_w(0).overflow_scrollbar()
-        .children(rows.map((row, index) => h_flex().h(26).flex_none().w(40 + count * 140).border_b(1).border_color(t.border)
-          .when(index % 2 !== 0, el => el.bg(t.surface))
-          .child(div().w(40).flex_none().px(4).text_size(11).text_color(t.dim).child(String(index + 1)))
-          .children(row.map((value, column) => div().id("table-cell-" + index + "-" + column).w(140).flex_none().px(6)
-            .truncate().border_l(1).border_color(t.border)
-            .when(Boolean(value), el => el.tooltip(value)).child(value.replace(/[\r\n]+/g, " ")))))));
+      .child(div().text_size(11).text_color(t.dim).child(rows.length + " rows · " + tab.tableWidth + " columns" + (truncated ? " · Preview limited" : "")))
+      .when(Boolean(tab.error), el => el.child(div().text_size(11).text_color(t.ansi1).child(tab.error)))
+      .when(Boolean(rows.length), el => el.child(TextView.html("files-table-" + tab.path + "-" + (tab.sheet ?? 0), tab.tableHtml)
+        .selectable().scrollable().flex_1().min_h(0).min_w(0)));
   }
 
   rows(prefix, depth, out, t) {
@@ -877,6 +922,12 @@ export default class Files extends View {
             .child(this.error || this.folderErrors.get(scope) || (this.pending.has(scope) || this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))), scope, "background", t), root))))
       .when(Boolean(file), el => el.child(h_flex().flex_none().flex_wrap().px(7).py(3).gap(4)
         .when(Boolean(file.code && file.format), el => el.child(this.button("files-mode", file.raw ? "Preview" : "Raw", cx => { file.raw = !file.raw; cx.notify(); }, t)))
+        .when(Boolean(file.sheets?.length), el => el
+          .when(file.sheet > 0, el => el.child(this.button("files-sheet-prev", "‹", cx => { if (!file.loading) this.loadSheet(file, file.sheet - 1, cx); }, t).tooltip("Previous worksheet")))
+          .child(div().id("files-sheet-name").max_w(145).truncate().px(4).py(4).text_size(12)
+            .tooltip(file.sheets[file.sheet]).child(file.sheets[file.sheet] + " (" + (file.sheet + 1) + "/" + file.sheets.length + ")"))
+          .when(file.sheet + 1 < file.sheets.length, el => el.child(this.button("files-sheet-next", "›", cx => { if (!file.loading) this.loadSheet(file, file.sheet + 1, cx); }, t).tooltip("Next worksheet"))))
+        .when(Boolean(file.table && !file.raw && file.table.rows.length && !file.loading), el => el.child(this.button("files-copy-table", "Copy table", cx => this.copyTable(file, cx), t)))
         .when(Boolean(file.media), el => el
           .child(this.button("files-detail", file.detail ? "Fit" : "100%", cx => { file.detail = !file.detail; cx.notify(); }, t))
           .child(div().flex_none().px(5).py(4).text_size(11).text_color(t.dim)
